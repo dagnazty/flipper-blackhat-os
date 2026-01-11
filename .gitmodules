@@ -1,11 +1,12 @@
 [submodule "buildroot"]
-	path = buildroot
-	url = git@github.com:o7-machinehum/buildroot.git
-    branch = numpy-bump
+  path = buildroot
+  url = https://github.com/o7-machinehum/buildroot.git
+  branch = numpy-bump
 
 [submodule "Bjorn-blackhat"]
-	path = package/bjorn/bjorn
-	url = git@github.com:o7-machinehum/Bjorn-blackhat.git
+  path = package/bjorn/bjorn
+  url = https://github.com/o7-machinehum/Bjorn-blackhat.git
+
 [submodule "armbian"]
-	path = armbian
-	url = https://github.com/armbian/build
+  path = armbian
+  url = https://github.com/armbian/build
