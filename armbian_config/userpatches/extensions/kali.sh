@@ -6,6 +6,30 @@ function extension_prepare_config__docker() {
 }
 
 function pre_customize_image__install_kali_packages(){
+	# Extra pentesting packages on top of kali-tools-top10
+	# Tier 1: WiFi Companions
+	# Tier 2: Network Attack Chain  
+	# Tier 3: Bluetooth/BLE
+	KALI_EXTRA_PACKAGES="
+		hcxdumptool
+		hcxtools
+		pixiewps
+		reaver
+		mdk4
+		bettercap
+		macchanger
+		wifite
+		responder
+		impacket-scripts
+		masscan
+		ettercap-text-only
+		netcat-traditional
+		tcpdump
+		bluez
+		bluez-tools
+		btscanner
+	"
+
 	display_alert "Adding gpg-key for Kali repository" "${BOARD}:${RELEASE}-${BRANCH} :: ${EXTENSION}" "info"
 	run_host_command_logged curl --max-time 60 -4 -fsSL "https://archive.kali.org/archive-key.asc" "|" gpg --dearmor -o "${SDCARD}"/usr/share/keyrings/kali.gpg
 
@@ -26,6 +50,9 @@ function pre_customize_image__install_kali_packages(){
 	display_alert "Updating package lists with Kali Linux repos" "${BOARD}:${RELEASE}-${BRANCH} :: ${EXTENSION}" "info"
 	do_with_retries 3 chroot_sdcard_apt_get_update
 
-	display_alert "Installing Top 10 Kali Linux tools" "${EXTENSION}" "info"
+	display_alert "Installing Kali tools top10" "${EXTENSION}" "info"
 	chroot_sdcard_apt_get_install kali-tools-top10
+
+	display_alert "Installing extra pentesting tools (Tier 1-3)" "${EXTENSION}" "info"
+	chroot_sdcard_apt_get_install ${KALI_EXTRA_PACKAGES}
 }

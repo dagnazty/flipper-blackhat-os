@@ -13,6 +13,10 @@ cd ..
 rsync -av armbian_config/userpatches/ armbian/userpatches/
 rsync -av armbian_config/config/ armbian/config/
 
+# Fix: Remove libfuse2t64 from forky/trixie packages (not available for ARM)
+sed -i.bak '/libfuse2t64/d' armbian/config/cli/trixie/main/packages.additional
+sed -i.bak '/libfuse2t64/d' armbian/config/cli/sid/main/packages.additional
+
 # Add kernel patches
 if [[ ${kver} == "edge" ]]; then
     cp patches/linux/0002-rtw88.patch armbian/userpatches/kernel/archive/sunxi-6.16/rtw88.patch
@@ -24,17 +28,25 @@ else
     exit
 fi
 
-# Install packages needed for bh scripts
-install -D package/blackhat/src/blackhat.sh armbian/userpatches/overlay/usr/local/bin/bh
-install -D package/blackhat/src/evil_portal.py armbian/userpatches/overlay/usr/local/bin/
-install -D package/blackhat/src/telegram.py armbian/userpatches/overlay/usr/local/bin/
-install -D -m 0644 package/blackhat/src/blackhat.conf armbian/userpatches/overlay/boot/bh/blackhat.conf
+# Install packages needed for bh scripts (macOS compatible)
+mkdir -p armbian/userpatches/overlay/usr/local/bin
+cp package/blackhat/src/blackhat.sh armbian/userpatches/overlay/usr/local/bin/bh
+chmod 755 armbian/userpatches/overlay/usr/local/bin/bh
+cp package/blackhat/src/evil_portal.py armbian/userpatches/overlay/usr/local/bin/
+chmod 755 armbian/userpatches/overlay/usr/local/bin/evil_portal.py
+cp package/blackhat/src/telegram.py armbian/userpatches/overlay/usr/local/bin/
+chmod 755 armbian/userpatches/overlay/usr/local/bin/telegram.py
+
+mkdir -p armbian/userpatches/overlay/boot/bh
+cp package/blackhat/src/blackhat.conf armbian/userpatches/overlay/boot/bh/blackhat.conf
+chmod 644 armbian/userpatches/overlay/boot/bh/blackhat.conf
 
 mkdir -p armbian/userpatches/overlay/boot/bh/scripts
 cp -a package/blackhat/scripts/. armbian/userpatches/overlay/boot/bh/scripts/
 
 # Install the init script
-install -D rootfs_overlay/etc/init.d/S51bh_init armbian/userpatches/overlay/usr/local/bin/bh_init
+cp rootfs_overlay/etc/init.d/S51bh_init armbian/userpatches/overlay/usr/local/bin/bh_init
+chmod 755 armbian/userpatches/overlay/usr/local/bin/bh_init
 
 # Add additional packages
 PKG_CONF="armbian/config/cli/trixie/main/packages.additional"

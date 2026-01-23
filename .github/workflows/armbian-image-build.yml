@@ -1,0 +1,124 @@
+name: armbian-image-build
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'armbian_config/**'
+      - 'build_armbian.sh'
+      - '.github/workflows/armbian-image-build.yml'
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version (edge or current)'
+        required: false
+        default: 'edge'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          
+          # Remove unnecessary large packages
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          
+          # Clean Docker
+          docker system prune -af || true
+          
+          # Clean apt
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          
+          echo "After cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget \
+            build-essential \
+            rsync bc
+
+      - name: Prepare Armbian build
+        run: |
+          cd armbian
+          git reset --hard
+          git clean -fd
+          cd ..
+          
+          # Copy userpatches to armbian
+          rsync -av armbian_config/userpatches/ armbian/userpatches/
+          rsync -av armbian_config/config/ armbian/config/
+          
+          # Fix: Remove libfuse2t64 from forky/trixie packages (not available for ARM)
+          sed -i '/libfuse2t64/d' armbian/config/cli/trixie/main/packages.additional || true
+          sed -i '/libfuse2t64/d' armbian/config/cli/sid/main/packages.additional || true
+          
+          # Copy kernel patches
+          cp patches/linux/0002-rtw88.patch armbian/userpatches/kernel/archive/sunxi-6.16/rtw88.patch
+          cp patches/linux/0003-st7701.patch armbian/userpatches/kernel/archive/sunxi-6.16/st7701.patch
+          
+          # Install blackhat scripts to overlay
+          mkdir -p armbian/userpatches/overlay/usr/local/bin
+          cp package/blackhat/src/blackhat.sh armbian/userpatches/overlay/usr/local/bin/bh
+          chmod 755 armbian/userpatches/overlay/usr/local/bin/bh
+          cp package/blackhat/src/evil_portal.py armbian/userpatches/overlay/usr/local/bin/
+          chmod 755 armbian/userpatches/overlay/usr/local/bin/evil_portal.py
+          cp package/blackhat/src/telegram.py armbian/userpatches/overlay/usr/local/bin/
+          chmod 755 armbian/userpatches/overlay/usr/local/bin/telegram.py
+          
+          mkdir -p armbian/userpatches/overlay/boot/bh
+          cp package/blackhat/src/blackhat.conf armbian/userpatches/overlay/boot/bh/blackhat.conf
+          chmod 644 armbian/userpatches/overlay/boot/bh/blackhat.conf
+          
+          mkdir -p armbian/userpatches/overlay/boot/bh/scripts
+          cp -a package/blackhat/scripts/. armbian/userpatches/overlay/boot/bh/scripts/
+          
+          cp rootfs_overlay/etc/init.d/S51bh_init armbian/userpatches/overlay/usr/local/bin/bh_init
+          chmod 755 armbian/userpatches/overlay/usr/local/bin/bh_init
+          
+          # Add additional packages
+          echo "usb-modeswitch" >> armbian/config/cli/trixie/main/packages.additional
+
+      - name: Build Armbian image
+        run: |
+          cd armbian
+          ./compile.sh build \
+            BOARD=flipper-blackhat \
+            BRANCH=${{ github.event.inputs.kernel_version || 'edge' }} \
+            BUILD_MINIMAL=no \
+            KERNEL_CONFIGURE=no \
+            ENABLE_EXTENSIONS="kali" \
+            KEEP_ORIGINAL_OS_RELEASE=yes \
+            RELEASE=forky
+
+      - name: Find built image
+        id: find_image
+        run: |
+          IMAGE=$(find armbian/output/images -name "*.img" -type f | head -1)
+          echo "image_path=$IMAGE" >> $GITHUB_OUTPUT
+          echo "image_name=$(basename $IMAGE)" >> $GITHUB_OUTPUT
+
+      - name: Upload Armbian image
+        uses: actions/upload-artifact@v4
+        with:
+          name: flipper-blackhat-armbian-${{ github.sha }}
+          path: ${{ steps.find_image.outputs.image_path }}
+          compression-level: 9
