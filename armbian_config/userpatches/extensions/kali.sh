@@ -50,9 +50,15 @@ function pre_customize_image__install_kali_packages(){
 	display_alert "Updating package lists with Kali Linux repos" "${BOARD}:${RELEASE}-${BRANCH} :: ${EXTENSION}" "info"
 	do_with_retries 3 chroot_sdcard_apt_get_update
 
-	display_alert "Installing Kali tools top10" "${EXTENSION}" "info"
-	chroot_sdcard_apt_get_install kali-tools-top10
+	# Try kali-tools-top10, but don't fail if dependencies conflict
+	display_alert "Installing Kali tools top10 (optional, may have conflicts)" "${EXTENSION}" "info"
+	chroot_sdcard_apt_get_install kali-tools-top10 || {
+		display_alert "kali-tools-top10 failed, installing core tools individually" "${EXTENSION}" "warn"
+		chroot_sdcard_apt_get_install --no-install-recommends \
+			aircrack-ng nmap hydra john sqlmap nikto \
+			metasploit-framework wireshark-common || true
+	}
 
 	display_alert "Installing extra pentesting tools (Tier 1-3)" "${EXTENSION}" "info"
-	chroot_sdcard_apt_get_install ${KALI_EXTRA_PACKAGES}
+	chroot_sdcard_apt_get_install --no-install-recommends ${KALI_EXTRA_PACKAGES} || true
 }
