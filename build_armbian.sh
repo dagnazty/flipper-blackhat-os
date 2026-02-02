@@ -48,6 +48,12 @@ cp -a package/blackhat/scripts/. armbian/userpatches/overlay/boot/bh/scripts/
 cp rootfs_overlay/etc/init.d/S51bh_init armbian/userpatches/overlay/usr/local/bin/bh_init
 chmod 755 armbian/userpatches/overlay/usr/local/bin/bh_init
 
+# Install BlackHat ToolKit (bhtk) Python package
+mkdir -p armbian/userpatches/overlay/usr/local/lib/bhtk
+cp -r package/blackhat/bhtk/* armbian/userpatches/overlay/usr/local/lib/bhtk/
+cp package/blackhat/bhtk/bhtk armbian/userpatches/overlay/usr/local/bin/bhtk
+chmod 755 armbian/userpatches/overlay/usr/local/bin/bhtk
+
 # Add additional packages
 PKG_CONF="armbian/config/cli/trixie/main/packages.additional"
 echo usb-modeswitch >> $PKG_CONF

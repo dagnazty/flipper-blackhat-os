@@ -1,31 +1,55 @@
 # Flipper Blackhat OS
-A WiFi security testing OS built on Linux for penetration testing and network analysis. Designed to with with the Flipper Blackhat.
+
+A WiFi security testing OS built on Linux for penetration testing and network analysis. Designed to work with the Flipper Blackhat.
+
+## Features
+
+### BlackHat ToolKit (BHTK)
+A menu-driven Python pentesting suite with integrated attack modules:
+
+| Module | Tools |
+|--------|-------|
+| **WiFi** | Scanner, Deauth, Handshake Capture, Evil Twin |
+| **Network** | Port Scan, ARP Spoof, Sniffer, Credential Harvester |
+| **Bluetooth** | BLE Scanner, Device Recon, Spoofing |
+| **Recon** | Banner Grab, Service Detection, Subdomain Finder |
+| **Automation** | WiFi Audit, Network Discovery, Quick Recon |
+
+```bash
+bhtk              # Interactive menu
+bhtk wifi scan    # Direct command
+```
+
+### Kali Linux Tools
+Pre-installed pentesting tools from Kali repositories:
+- **WiFi**: aircrack-ng, hcxdumptool, hcxtools, pixiewps, reaver, mdk4, bettercap, macchanger, wifite
+- **Network**: responder, impacket-scripts, masscan, ettercap, hydra, nmap, netcat, tcpdump
+- **Bluetooth**: btscanner, bluez-tools
 
 ## Documentation
 For complete functionality reference and usage examples, see [BLACKHAT_REFERENCE.md](BLACKHAT_REFERENCE.md).
 
 ## Releases
-The best way to get your hands on all the most recent features is the [nightly build](https://github.com/o7-machinehum/flipper-blackhat-os/actions) here. Just click the most recent "Nightly" and you will find the OS artifacts at the bottom. These can then be flashed to an SD card using unix dd, or whatever Windows application you would use to flash a RPI SD card.
+The best way to get your hands on all the most recent features is the [nightly build](https://github.com/dagnazty/flipper-blackhat-os/actions). Click the most recent build and find the OS artifacts at the bottom. Flash to SD card using `dd` or your preferred imaging tool.
 
-## Build (Buildroot)
-Make sure submodules are initialized:
+## Build
 
-	git submodule update --init
+### Armbian (Recommended)
+```bash
+git submodule update --init
+./build_armbian.sh
+```
 
-Change to the top-level Buildroot directory:
+### Buildroot (Legacy)
+```bash
+git submodule update --init
+cd buildroot
+make BR2_EXTERNAL=$PWD/../ flipper_blackhat_a33_defconfig
+make
+```
 
-	cd buildroot
-
-Initialize the configuration, including the defconfig and this external directory:
-
-	make BR2_EXTERNAL=$PWD/../ flipper_blackhat_a33_defconfig
-
-And compile:
-
-	make
-
-## Build (Armbian)
-The armbian build is pretty simple...
-    ./armbian_build.sh
-
-
+## Credits
+- [o7-machinehum](https://github.com/o7-machinehum) - Original Flipper Blackhat hardware and OS
+- [Flipper Blackhat Hardware](https://github.com/o7-machinehum/flipper-blackhat)
+- [Armbian](https://www.armbian.com/)
+- [Kali Linux](https://www.kali.org/)
