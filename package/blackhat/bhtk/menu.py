@@ -21,6 +21,7 @@ import io
 import json
 import socket
 import subprocess
+import threading
 import time
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
@@ -42,6 +43,7 @@ DEFAULT_KEYBINDS = {
     "palette": ["/"],
     "theme": ["t"],
     "dashboard": ["d"],
+    "cancel": ["x"],
     "quit": ["q"],
 }
 
@@ -146,6 +148,8 @@ class TUIMenuApp:
         self.event_log: List[str] = ["UI initialized"]
         self.hotkeys: dict[str, MenuNode] = {}
         self.show_dashboard = True
+        self.active_procs: List[subprocess.Popen] = []
+        self.cancel_requested = False
 
         settings = self._load_settings()
         self.theme_index = self._theme_index_from_name(settings.get("default_theme", "Flipper"))
@@ -238,7 +242,7 @@ class TUIMenuApp:
         self._draw_logs(stdscr, log_top, left, log_bottom, right)
 
         system = self._system_snapshot()
-        hints = "↑/↓ move Enter select / global t theme d dash 1..9 hotkeys Backspace/Esc back q quit"
+        hints = "↑/↓ move Enter select / global t theme d dash x cancel 1..9 hotkeys Backspace/Esc back q quit"
         stdscr.attron(curses.color_pair(4))
         stdscr.addstr(h - 2, 2, f"Status: {self.status}"[: max(1, w - 4)])
         stdscr.attroff(curses.color_pair(4))
@@ -678,21 +682,79 @@ class TUIMenuApp:
                 return options[idx]
         return None
 
+    def _terminate_active_procs(self):
+        for p in list(self.active_procs):
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception:
+                pass
+        time.sleep(0.2)
+        for p in list(self.active_procs):
+            try:
+                if p.poll() is None:
+                    p.kill()
+            except Exception:
+                pass
+
     def run_action_in_app(self, title: str, func: Callable, *args, **kwargs):
-        self.status = f"Running {title}..."
+        self.status = f"Running {title}... (press x to cancel)"
         result = None
         error = None
         writer = UILogWriter(self)
+        self.cancel_requested = False
+        self.active_procs = []
+
+        original_popen = subprocess.Popen
+
+        def tracked_popen(*p_args, **p_kwargs):
+            p = original_popen(*p_args, **p_kwargs)
+            self.active_procs.append(p)
+            return p
+
+        holder = {"done": False}
+
+        def worker():
+            nonlocal result, error
+            try:
+                subprocess.Popen = tracked_popen
+                with redirect_stdout(writer), redirect_stderr(writer):
+                    result = func(*args, **kwargs)
+            except KeyboardInterrupt:
+                error = "Interrupted"
+            except Exception:
+                error = traceback.format_exc(limit=1)
+            finally:
+                subprocess.Popen = original_popen
+                holder["done"] = True
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+        self.stdscr.timeout(100)
         try:
-            with redirect_stdout(writer), redirect_stderr(writer):
-                result = func(*args, **kwargs)
-        except KeyboardInterrupt:
-            error = "Interrupted"
-        except Exception:
-            error = traceback.format_exc(limit=1)
+            while not holder["done"]:
+                self._draw(self.stdscr)
+                key = self.stdscr.getch()
+                if key != -1 and self._is_action_key(key, "cancel"):
+                    self.cancel_requested = True
+                    self._log("Cancel requested by user")
+                    self._terminate_active_procs()
+                    self.status = f"Canceling {title}..."
+                elif key != -1 and self._is_action_key(key, "quit"):
+                    self._log("Quit requested during action; canceling task first")
+                    self.cancel_requested = True
+                    self._terminate_active_procs()
+            t.join(timeout=0.2)
         finally:
+            self.stdscr.timeout(-1)
             writer.flush()
-        if error:
+            self.active_procs = []
+
+        if self.cancel_requested and not error:
+            self.status = f"Canceled {title}"
+            self._log(self.status)
+        elif error:
             self.status = f"Error: {title}"
             self._log(str(error))
         else:
