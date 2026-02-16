@@ -46,6 +46,31 @@ DEFAULT_KEYBINDS = {
 }
 
 
+class UILogWriter:
+    """File-like stdout sink that streams lines into the UI log."""
+
+    def __init__(self, app: "TUIMenuApp"):
+        self.app = app
+        self.buf = ""
+
+    def write(self, data: str):
+        if not data:
+            return 0
+        self.buf += data
+        while "\n" in self.buf:
+            line, self.buf = self.buf.split("\n", 1)
+            line = line.strip()
+            if line:
+                self.app._log(line[:180])
+        return len(data)
+
+    def flush(self):
+        tail = self.buf.strip()
+        if tail:
+            self.app._log(tail[:180])
+        self.buf = ""
+
+
 @dataclass
 class MenuNode:
     """Tree node representing a menu entry."""
@@ -125,6 +150,7 @@ class TUIMenuApp:
         settings = self._load_settings()
         self.theme_index = self._theme_index_from_name(settings.get("default_theme", "Flipper"))
         self.keybinds = settings.get("keybinds", DEFAULT_KEYBINDS)
+        self.recent = settings.get("recent", {})
 
     @property
     def current(self) -> MenuNode:
@@ -595,11 +621,13 @@ class TUIMenuApp:
             self._log(f"Error: {selected.title}: {exc}")
             self._log(traceback.format_exc(limit=1).strip())
 
-    def prompt_text(self, prompt: str, default: str = "", max_len: int = 80) -> Optional[str]:
+    def prompt_text(self, prompt: str, default: str = "", max_len: int = 80, remember_key: Optional[str] = None) -> Optional[str]:
         stdscr = getattr(self, "stdscr", None)
         if stdscr is None:
             return default
         h, w = stdscr.getmaxyx()
+        if remember_key and not default:
+            default = str(self.recent.get(remember_key, ""))
         text = f"{prompt}"
         if default:
             text += f" [{default}]"
@@ -611,8 +639,13 @@ class TUIMenuApp:
         raw = stdscr.getstr(h - 1, min(w - 2, len(text) + 2), max_len).decode(errors="ignore").strip()
         curses.noecho()
         if raw == "":
-            return default
-        return raw
+            val = default
+        else:
+            val = raw
+        if remember_key and val is not None:
+            self.recent[remember_key] = val
+            self._save_settings()
+        return val
 
     def choose_from_list(self, title: str, options: List[str], default_index: int = 0) -> Optional[str]:
         stdscr = getattr(self, "stdscr", None)
@@ -647,20 +680,18 @@ class TUIMenuApp:
 
     def run_action_in_app(self, title: str, func: Callable, *args, **kwargs):
         self.status = f"Running {title}..."
-        buf = io.StringIO()
         result = None
         error = None
+        writer = UILogWriter(self)
         try:
-            with redirect_stdout(buf), redirect_stderr(buf):
+            with redirect_stdout(writer), redirect_stderr(writer):
                 result = func(*args, **kwargs)
         except KeyboardInterrupt:
             error = "Interrupted"
         except Exception:
             error = traceback.format_exc(limit=1)
-        output = buf.getvalue().strip()
-        if output:
-            for line in output.splitlines()[-20:]:
-                self._log(line[:180])
+        finally:
+            writer.flush()
         if error:
             self.status = f"Error: {title}"
             self._log(str(error))
@@ -748,6 +779,7 @@ class TUIMenuApp:
         data = {
             "default_theme": THEMES[self.theme_index].name,
             "keybinds": self.keybinds,
+            "recent": self.recent,
         }
         try:
             SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -831,7 +863,7 @@ class MainMenu:
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
         if not iface:
             return
-        ap = app.prompt_text("Target AP BSSID")
+        ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
         if not ap:
             return
         client = app.prompt_text("Target client MAC (blank=broadcast)", "")
@@ -844,8 +876,8 @@ class MainMenu:
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
         if not iface:
             return
-        ap = app.prompt_text("Target AP BSSID")
-        ch = app.prompt_text("Channel", "1")
+        ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
+        ch = app.prompt_text("Channel", "1", remember_key="wifi_channel")
         if not ap or not ch:
             return
         if not app.run_action_in_app("Enable Monitor", enable_monitor_mode, iface):
@@ -860,32 +892,32 @@ class MainMenu:
         from .utils.interfaces import get_wifi_interfaces
         app = self._app()
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
-        ssid = app.prompt_text("SSID to impersonate")
-        ch = app.prompt_text("Channel", "6")
+        ssid = app.prompt_text("SSID to impersonate", remember_key="evil_ssid")
+        ch = app.prompt_text("Channel", "6", remember_key="wifi_channel")
         if iface and ssid:
             app.run_action_in_app("Evil Twin AP", evil_twin.setup, iface, ssid, int(ch or "6"))
 
     def action_portscan(self):
         from .network import portscan
         app = self._app()
-        target = app.prompt_text("Target IP/hostname")
-        ports = app.prompt_text("Ports", "1-1000")
+        target = app.prompt_text("Target IP/hostname", remember_key="target_host")
+        ports = app.prompt_text("Ports", "1-1000", remember_key="ports")
         if target:
             app.run_action_in_app("Port Scanner", portscan.scan, target, ports)
 
     def action_arp_spoof(self):
         from .network import arp_spoof
         app = self._app()
-        target = app.prompt_text("Target IP")
-        gateway = app.prompt_text("Gateway (blank=auto)", "")
+        target = app.prompt_text("Target IP", remember_key="target_ip")
+        gateway = app.prompt_text("Gateway (blank=auto)", "", remember_key="gateway")
         if target:
             app.run_action_in_app("ARP Spoof", arp_spoof.attack, target, gateway or None)
 
     def action_sniffer(self):
         from .network import sniffer
         app = self._app()
-        iface = app.prompt_text("Interface (blank=any)", "")
-        filt = app.prompt_text("BPF filter (blank=none)", "")
+        iface = app.prompt_text("Interface (blank=any)", "", remember_key="sniff_iface")
+        filt = app.prompt_text("BPF filter (blank=none)", "", remember_key="sniff_filter")
         count = app.prompt_text("Packet count", "200")
         app.run_action_in_app("Packet Sniffer", sniffer.capture, iface or None, filt or None, None, int(count or "200"))
 
@@ -903,7 +935,7 @@ class MainMenu:
     def action_bt_recon(self):
         from .bluetooth import recon
         app = self._app()
-        mac = app.prompt_text("Bluetooth MAC")
+        mac = app.prompt_text("Bluetooth MAC", remember_key="bt_mac")
         if mac:
             app.run_action_in_app("Bluetooth Recon", recon.gather, mac)
 
@@ -921,8 +953,8 @@ class MainMenu:
     def action_banner(self):
         from .recon import banner
         app = self._app()
-        target = app.prompt_text("Target host/IP")
-        ports = app.prompt_text("Ports comma/range (blank=common)", "")
+        target = app.prompt_text("Target host/IP", remember_key="target_host")
+        ports = app.prompt_text("Ports comma/range (blank=common)", "", remember_key="ports")
         parsed = None
         if ports:
             parsed = []
@@ -939,15 +971,15 @@ class MainMenu:
     def action_services(self):
         from .recon import services
         app = self._app()
-        target = app.prompt_text("Target host/IP")
-        ports = app.prompt_text("Ports", "1-1000")
+        target = app.prompt_text("Target host/IP", remember_key="target_host")
+        ports = app.prompt_text("Ports", "1-1000", remember_key="ports")
         if target:
             app.run_action_in_app("Service Detection", services.detect, target, ports)
 
     def action_subdomain(self):
         from .recon import subdomain
         app = self._app()
-        dom = app.prompt_text("Target domain")
+        dom = app.prompt_text("Target domain", remember_key="target_domain")
         if dom:
             dom = dom.replace("http://", "").replace("https://", "").split('/')[0]
             app.run_action_in_app("Subdomain Finder", subdomain.find, dom)
