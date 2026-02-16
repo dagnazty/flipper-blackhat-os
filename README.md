@@ -40,13 +40,8 @@ git submodule update --init
 ./build_armbian.sh
 ```
 
-### Buildroot (Legacy)
-```bash
-git submodule update --init
-cd buildroot
-make BR2_EXTERNAL=$PWD/../ flipper_blackhat_a33_defconfig
-make
-```
+### Buildroot
+Buildroot CI is disabled in this repository. Armbian is the supported build path.
 
 ## Credits
 - [o7-machinehum](https://github.com/o7-machinehum) - Original Flipper Blackhat hardware and OS
