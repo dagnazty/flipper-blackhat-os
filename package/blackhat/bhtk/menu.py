@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import curses
 import getpass
+import io
 import json
 import socket
 import subprocess
 import time
+import traceback
+from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +32,7 @@ from typing import Callable, List, Optional, Tuple
 
 LOG_PATH = Path("/tmp/bhtk-ui.log")
 SETTINGS_PATH = Path.home() / ".config" / "bhtk" / "ui.json"
+CURRENT_APP: "TUIMenuApp | None" = None
 
 DEFAULT_KEYBINDS = {
     "up": ["KEY_UP", "k"],
@@ -137,9 +141,12 @@ class TUIMenuApp:
         return self.items[self.selected_index]
 
     def run(self):
+        global CURRENT_APP
+        CURRENT_APP = self
         curses.wrapper(self._main)
 
     def _main(self, stdscr):
+        self.stdscr = stdscr
         curses.curs_set(0)
         stdscr.nodelay(False)
         stdscr.keypad(True)
@@ -576,25 +583,90 @@ class TUIMenuApp:
         self.status = f"Running {selected.title}..."
         self._log(self.status)
 
-        curses.def_prog_mode()
-        curses.endwin()
-
         try:
             selected.handler()
-            input("\nPress Enter to return to menu...")
             self.status = f"Completed {selected.title}"
             self._log(self.status)
         except KeyboardInterrupt:
             self.status = f"Interrupted {selected.title}"
             self._log(self.status)
         except Exception as exc:
-            print(f"\n[!] Error running {selected.title}: {exc}")
-            input("\nPress Enter to return to menu...")
             self.status = f"Error in {selected.title}"
             self._log(f"Error: {selected.title}: {exc}")
-        finally:
-            curses.reset_prog_mode()
-            stdscr.refresh()
+            self._log(traceback.format_exc(limit=1).strip())
+
+    def prompt_text(self, prompt: str, default: str = "", max_len: int = 80) -> Optional[str]:
+        stdscr = getattr(self, "stdscr", None)
+        if stdscr is None:
+            return default
+        h, w = stdscr.getmaxyx()
+        text = f"{prompt}"
+        if default:
+            text += f" [{default}]"
+        text += ": "
+        curses.echo()
+        stdscr.addstr(h - 1, 2, " " * (w - 4))
+        stdscr.addstr(h - 1, 2, text[: max(1, w - 4)])
+        stdscr.refresh()
+        raw = stdscr.getstr(h - 1, min(w - 2, len(text) + 2), max_len).decode(errors="ignore").strip()
+        curses.noecho()
+        if raw == "":
+            return default
+        return raw
+
+    def choose_from_list(self, title: str, options: List[str], default_index: int = 0) -> Optional[str]:
+        stdscr = getattr(self, "stdscr", None)
+        if stdscr is None:
+            return options[default_index] if options else None
+        if not options:
+            self.status = f"No options for {title}"
+            self._log(self.status)
+            return None
+        h, w = stdscr.getmaxyx()
+        max_show = min(9, len(options))
+        start_y = max(2, h - (max_show + 6))
+        stdscr.addstr(start_y, 2, " " * (w - 4))
+        stdscr.addstr(start_y, 2, f"{title}: pick 1-{max_show} (blank={default_index+1})"[: max(1, w - 4)])
+        for i in range(max_show):
+            stdscr.addstr(start_y + 1 + i, 2, " " * (w - 4))
+            stdscr.addstr(start_y + 1 + i, 2, f"[{i+1}] {options[i]}"[: max(1, w - 4)])
+        stdscr.addstr(start_y + 1 + max_show, 2, " " * (w - 4))
+        stdscr.addstr(start_y + 1 + max_show, 2, "Choice: ")
+        stdscr.refresh()
+        curses.echo()
+        raw = stdscr.getstr(start_y + 1 + max_show, 10, 3).decode(errors="ignore").strip()
+        curses.noecho()
+        if raw == "":
+            idx = max(0, min(default_index, len(options)-1))
+            return options[idx]
+        if raw.isdigit():
+            idx = int(raw)-1
+            if 0 <= idx < len(options):
+                return options[idx]
+        return None
+
+    def run_action_in_app(self, title: str, func: Callable, *args, **kwargs):
+        self.status = f"Running {title}..."
+        buf = io.StringIO()
+        result = None
+        error = None
+        try:
+            with redirect_stdout(buf), redirect_stderr(buf):
+                result = func(*args, **kwargs)
+        except KeyboardInterrupt:
+            error = "Interrupted"
+        except Exception:
+            error = traceback.format_exc(limit=1)
+        output = buf.getvalue().strip()
+        if output:
+            for line in output.splitlines()[-20:]:
+                self._log(line[:180])
+        if error:
+            self.status = f"Error: {title}"
+            self._log(str(error))
+        else:
+            self.status = f"Completed {title}"
+        return result
 
     def _confirm(self, stdscr, node: MenuNode) -> bool:
         h, w = stdscr.getmaxyx()
@@ -736,6 +808,195 @@ class MainMenu:
     def run(self):
         TUIMenuApp(self.root).run()
 
+    # -------- In-app action wrappers (no module input prompts) --------
+    def _app(self) -> TUIMenuApp:
+        if CURRENT_APP is None:
+            raise RuntimeError("UI app not initialized")
+        return CURRENT_APP
+
+    def action_wifi_scan(self):
+        from .wifi import scanner
+        from .utils.interfaces import get_wifi_interfaces
+        app = self._app()
+        iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
+        if not iface:
+            app.status = "Canceled"
+            return
+        app.run_action_in_app("Scan Networks", scanner.scan, iface)
+
+    def action_deauth(self):
+        from .wifi import deauth
+        from .utils.interfaces import get_wifi_interfaces
+        app = self._app()
+        iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
+        if not iface:
+            return
+        ap = app.prompt_text("Target AP BSSID")
+        if not ap:
+            return
+        client = app.prompt_text("Target client MAC (blank=broadcast)", "")
+        app.run_action_in_app("Deauth Attack", deauth.attack, iface, client or None, ap)
+
+    def action_handshake(self):
+        from .wifi import handshake
+        from .utils.interfaces import get_wifi_interfaces, enable_monitor_mode, disable_monitor_mode
+        app = self._app()
+        iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
+        if not iface:
+            return
+        ap = app.prompt_text("Target AP BSSID")
+        ch = app.prompt_text("Channel", "1")
+        if not ap or not ch:
+            return
+        if not app.run_action_in_app("Enable Monitor", enable_monitor_mode, iface):
+            return
+        try:
+            app.run_action_in_app("Capture Handshake", handshake.capture, iface, ap, ch)
+        finally:
+            app.run_action_in_app("Disable Monitor", disable_monitor_mode, iface)
+
+    def action_evil_twin(self):
+        from .wifi import evil_twin
+        from .utils.interfaces import get_wifi_interfaces
+        app = self._app()
+        iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
+        ssid = app.prompt_text("SSID to impersonate")
+        ch = app.prompt_text("Channel", "6")
+        if iface and ssid:
+            app.run_action_in_app("Evil Twin AP", evil_twin.setup, iface, ssid, int(ch or "6"))
+
+    def action_portscan(self):
+        from .network import portscan
+        app = self._app()
+        target = app.prompt_text("Target IP/hostname")
+        ports = app.prompt_text("Ports", "1-1000")
+        if target:
+            app.run_action_in_app("Port Scanner", portscan.scan, target, ports)
+
+    def action_arp_spoof(self):
+        from .network import arp_spoof
+        app = self._app()
+        target = app.prompt_text("Target IP")
+        gateway = app.prompt_text("Gateway (blank=auto)", "")
+        if target:
+            app.run_action_in_app("ARP Spoof", arp_spoof.attack, target, gateway or None)
+
+    def action_sniffer(self):
+        from .network import sniffer
+        app = self._app()
+        iface = app.prompt_text("Interface (blank=any)", "")
+        filt = app.prompt_text("BPF filter (blank=none)", "")
+        count = app.prompt_text("Packet count", "200")
+        app.run_action_in_app("Packet Sniffer", sniffer.capture, iface or None, filt or None, None, int(count or "200"))
+
+    def action_harvester(self):
+        from .network import harvester
+        app = self._app()
+        app.run_action_in_app("Credential Harvester", harvester.run)
+
+    def action_ble_scan(self):
+        from .bluetooth import ble_scan
+        app = self._app()
+        dur = app.prompt_text("BLE scan duration seconds", "10")
+        app.run_action_in_app("BLE Scan", ble_scan.scan, int(dur or "10"))
+
+    def action_bt_recon(self):
+        from .bluetooth import recon
+        app = self._app()
+        mac = app.prompt_text("Bluetooth MAC")
+        if mac:
+            app.run_action_in_app("Bluetooth Recon", recon.gather, mac)
+
+    def action_bt_spoof(self):
+        from .bluetooth import spoof
+        from .utils.interfaces import get_bt_interfaces
+        app = self._app()
+        iface = app.choose_from_list("Bluetooth interface", get_bt_interfaces()) or "hci0"
+        name = app.prompt_text("Spoof name", "BHTK-Device")
+        device_class = app.prompt_text("Device class hex", "0x5a020c")
+        random_mac = app.prompt_text("Random MAC? y/N", "y").lower() == "y"
+        mac = spoof.generate_random_mac() if random_mac else app.prompt_text("Custom MAC", "")
+        app.run_action_in_app("Spoof Device", spoof.run, iface, name or None, mac or None, device_class or None)
+
+    def action_banner(self):
+        from .recon import banner
+        app = self._app()
+        target = app.prompt_text("Target host/IP")
+        ports = app.prompt_text("Ports comma/range (blank=common)", "")
+        parsed = None
+        if ports:
+            parsed = []
+            for part in ports.split(','):
+                part = part.strip()
+                if '-' in part:
+                    a,b = part.split('-',1)
+                    parsed.extend(list(range(int(a), int(b)+1)))
+                elif part:
+                    parsed.append(int(part))
+        if target:
+            app.run_action_in_app("Banner Grabber", banner.grab, target, parsed)
+
+    def action_services(self):
+        from .recon import services
+        app = self._app()
+        target = app.prompt_text("Target host/IP")
+        ports = app.prompt_text("Ports", "1-1000")
+        if target:
+            app.run_action_in_app("Service Detection", services.detect, target, ports)
+
+    def action_subdomain(self):
+        from .recon import subdomain
+        app = self._app()
+        dom = app.prompt_text("Target domain")
+        if dom:
+            dom = dom.replace("http://", "").replace("https://", "").split('/')[0]
+            app.run_action_in_app("Subdomain Finder", subdomain.find, dom)
+
+    def action_wifi_audit(self):
+        app = self._app()
+        app._log("Workflow: WiFi Audit")
+        self.action_wifi_scan()
+        ap = app.prompt_text("Audit target AP BSSID for handshake (blank skip)", "")
+        if ap:
+            ch = app.prompt_text("AP channel", "1")
+            from .wifi import handshake
+            from .utils.interfaces import get_wifi_interfaces, enable_monitor_mode, disable_monitor_mode
+            iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
+            if iface and enable_monitor_mode(iface):
+                try:
+                    app.run_action_in_app("Handshake Capture", handshake.capture, iface, ap, ch)
+                finally:
+                    app.run_action_in_app("Disable Monitor", disable_monitor_mode, iface)
+
+    def action_network_discovery(self):
+        app = self._app()
+        target = app.prompt_text("Network CIDR or host (e.g. 192.168.1.0/24)")
+        if not target:
+            return
+        from .network import portscan
+        from .recon import services
+        app.run_action_in_app("Quick Port Scan", portscan.scan, target, "22,53,80,443,445,3389")
+        deep = app.prompt_text("Run service detection too? y/N", "n").lower() == "y"
+        if deep:
+            app.run_action_in_app("Service Detection", services.detect, target, "1-1000")
+
+    def action_quick_recon(self):
+        app = self._app()
+        target = app.prompt_text("Target domain/IP")
+        if not target:
+            return
+        from .network import portscan
+        from .recon import banner, subdomain
+        app.run_action_in_app("Quick Scan", portscan.quick_scan, target)
+        app.run_action_in_app("Banner Grab", banner.grab, target)
+        if any(c.isalpha() for c in target):
+            dom = target.replace("http://", "").replace("https://", "").split('/')[0]
+            app.run_action_in_app("Subdomain Finder", subdomain.find, dom, subdomain.COMMON_SUBDOMAINS[:20])
+
+    def action_system_info(self):
+        from .utils.interfaces import get_wifi_interfaces, get_bt_interfaces
+        self._app().run_action_in_app("System Info", _print_system_info, get_wifi_interfaces, get_bt_interfaces)
+
     def _build_tree(self) -> MenuNode:
         from .wifi import scanner, deauth, handshake, evil_twin
         from .network import portscan, arp_spoof, sniffer, harvester
@@ -755,10 +1016,10 @@ class MainMenu:
                     risk="high",
                     description="Wireless operations: scanning, handshake capture, deauth, and AP impersonation.",
                     children=[
-                        MenuNode("Scan Networks", handler=scanner.interactive, risk="low", description="Discover nearby WiFi APs and metadata."),
-                        MenuNode("Deauth Attack", handler=deauth.interactive, risk="high", description="Transmit deauthentication frames to disconnect clients."),
-                        MenuNode("Capture Handshake", handler=handshake.interactive, risk="medium", description="Capture WPA handshakes for offline analysis."),
-                        MenuNode("Evil Twin AP", handler=evil_twin.interactive, risk="high", description="Clone a target SSID and lure clients to rogue AP."),
+                        MenuNode("Scan Networks", handler=self.action_wifi_scan, risk="low", description="Discover nearby WiFi APs and metadata."),
+                        MenuNode("Deauth Attack", handler=self.action_deauth, risk="high", description="Transmit deauthentication frames to disconnect clients."),
+                        MenuNode("Capture Handshake", handler=self.action_handshake, risk="medium", description="Capture WPA handshakes for offline analysis."),
+                        MenuNode("Evil Twin AP", handler=self.action_evil_twin, risk="high", description="Clone a target SSID and lure clients to rogue AP."),
                     ],
                 ),
                 MenuNode(
@@ -767,10 +1028,10 @@ class MainMenu:
                     risk="high",
                     description="Local network enumeration, interception, and active traffic operations.",
                     children=[
-                        MenuNode("Port Scanner", handler=portscan.interactive, risk="low", description="Scan host(s) for open TCP/UDP services."),
-                        MenuNode("ARP Spoof", handler=arp_spoof.interactive, risk="high", description="Poison ARP tables for man-in-the-middle positioning."),
-                        MenuNode("Packet Sniffer", handler=sniffer.interactive, risk="medium", description="Capture and inspect traffic on selected interface."),
-                        MenuNode("Credential Harvester", handler=harvester.interactive, risk="high", description="Run credential collection workflow."),
+                        MenuNode("Port Scanner", handler=self.action_portscan, risk="low", description="Scan host(s) for open TCP/UDP services."),
+                        MenuNode("ARP Spoof", handler=self.action_arp_spoof, risk="high", description="Poison ARP tables for man-in-the-middle positioning."),
+                        MenuNode("Packet Sniffer", handler=self.action_sniffer, risk="medium", description="Capture and inspect traffic on selected interface."),
+                        MenuNode("Credential Harvester", handler=self.action_harvester, risk="high", description="Run credential collection workflow."),
                     ],
                 ),
                 MenuNode(
@@ -779,9 +1040,9 @@ class MainMenu:
                     risk="medium",
                     description="Bluetooth reconnaissance and identity spoof capabilities.",
                     children=[
-                        MenuNode("BLE Scanner", handler=ble_scan.interactive, risk="low", description="Scan for BLE advertisers and metadata."),
-                        MenuNode("Device Recon", handler=bt_recon.interactive, risk="low", description="Gather data about discovered Bluetooth devices."),
-                        MenuNode("Spoof Device", handler=spoof.interactive, risk="high", description="Emulate or spoof Bluetooth identity parameters."),
+                        MenuNode("BLE Scanner", handler=self.action_ble_scan, risk="low", description="Scan for BLE advertisers and metadata."),
+                        MenuNode("Device Recon", handler=self.action_bt_recon, risk="low", description="Gather data about discovered Bluetooth devices."),
+                        MenuNode("Spoof Device", handler=self.action_bt_spoof, risk="high", description="Emulate or spoof Bluetooth identity parameters."),
                     ],
                 ),
                 MenuNode(
@@ -790,9 +1051,9 @@ class MainMenu:
                     risk="medium",
                     description="Target profiling and service intelligence modules.",
                     children=[
-                        MenuNode("Banner Grabber", handler=banner.interactive, risk="low", description="Collect service banners from target endpoints."),
-                        MenuNode("Service Detection", handler=services.interactive, risk="low", description="Identify network services and likely versions."),
-                        MenuNode("Subdomain Finder", handler=subdomain.interactive, risk="low", description="Enumerate subdomains for target domain."),
+                        MenuNode("Banner Grabber", handler=self.action_banner, risk="low", description="Collect service banners from target endpoints."),
+                        MenuNode("Service Detection", handler=self.action_services, risk="low", description="Identify network services and likely versions."),
+                        MenuNode("Subdomain Finder", handler=self.action_subdomain, risk="low", description="Enumerate subdomains for target domain."),
                     ],
                 ),
                 MenuNode(
@@ -801,9 +1062,9 @@ class MainMenu:
                     risk="high",
                     description="Multi-step workflows for fast assessments.",
                     children=[
-                        MenuNode("Full WiFi Audit", handler=workflows.wifi_audit, risk="high", description="Run chained wireless assessment workflow."),
-                        MenuNode("Network Discovery", handler=workflows.network_discovery, risk="medium", description="Automated host and service discovery pass."),
-                        MenuNode("Quick Recon", handler=workflows.quick_recon, risk="low", description="Fast reconnaissance summary collection."),
+                        MenuNode("Full WiFi Audit", handler=self.action_wifi_audit, risk="high", description="Run chained wireless assessment workflow."),
+                        MenuNode("Network Discovery", handler=self.action_network_discovery, risk="medium", description="Automated host and service discovery pass."),
+                        MenuNode("Quick Recon", handler=self.action_quick_recon, risk="low", description="Fast reconnaissance summary collection."),
                     ],
                 ),
                 MenuNode(
@@ -811,7 +1072,7 @@ class MainMenu:
                     subtitle="Quick interface inventory",
                     risk="low",
                     description="Display current wireless and Bluetooth interfaces.",
-                    handler=lambda: _print_system_info(get_wifi_interfaces, get_bt_interfaces),
+                    handler=self.action_system_info,
                 ),
             ],
         )
