@@ -150,6 +150,7 @@ class TUIMenuApp:
         self.show_dashboard = True
         self.active_procs: List[subprocess.Popen] = []
         self.cancel_requested = False
+        self.last_wifi_networks: List[dict] = []
 
         settings = self._load_settings()
         self.theme_index = self._theme_index_from_name(settings.get("default_theme", "Flipper"))
@@ -916,7 +917,10 @@ class MainMenu:
         if not iface:
             app.status = "Canceled"
             return
-        app.run_action_in_app("Scan Networks", scanner.scan, iface)
+        networks = app.run_action_in_app("Scan Networks", scanner.scan, iface)
+        self.last_wifi_networks = networks or []
+        app.run_action_in_app("Display Networks", scanner.display_networks, self.last_wifi_networks)
+        app._log(f"WiFi scan results: {len(self.last_wifi_networks)} networks")
 
     def action_deauth(self):
         from .wifi import deauth
@@ -925,9 +929,20 @@ class MainMenu:
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
         if not iface:
             return
-        ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
+
+        ap = None
+        if self.last_wifi_networks:
+            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks[:20]]
+            pick = app.choose_from_list("Pick AP from last scan (or cancel for manual)", opts)
+            if pick:
+                idx = opts.index(pick)
+                ap = self.last_wifi_networks[idx].get("bssid")
+
+        if not ap:
+            ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
         if not ap:
             return
+
         client = app.prompt_text("Target client MAC (blank=broadcast)", "")
         app.run_action_in_app("Deauth Attack", deauth.attack, iface, client or None, ap)
 
@@ -938,8 +953,23 @@ class MainMenu:
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
         if not iface:
             return
-        ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
-        ch = app.prompt_text("Channel", "1", remember_key="wifi_channel")
+
+        ap = None
+        ch = None
+        if self.last_wifi_networks:
+            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks[:20]]
+            pick = app.choose_from_list("Pick AP from last scan (or cancel for manual)", opts)
+            if pick:
+                idx = opts.index(pick)
+                chosen = self.last_wifi_networks[idx]
+                ap = chosen.get("bssid")
+                ch = str(chosen.get("channel") or "1")
+
+        if not ap:
+            ap = app.prompt_text("Target AP BSSID", remember_key="ap_bssid")
+        if not ch:
+            ch = app.prompt_text("Channel", "1", remember_key="wifi_channel")
+
         if not ap or not ch:
             return
         if not app.run_action_in_app("Enable Monitor", enable_monitor_mode, iface):
