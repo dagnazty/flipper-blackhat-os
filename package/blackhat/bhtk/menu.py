@@ -151,6 +151,7 @@ class TUIMenuApp:
         self.active_procs: List[subprocess.Popen] = []
         self.cancel_requested = False
         self.last_wifi_networks: List[dict] = []
+        self.last_ble_devices: List[dict] = []
 
         settings = self._load_settings()
         self.theme_index = self._theme_index_from_name(settings.get("default_theme", "Flipper"))
@@ -1022,12 +1023,25 @@ class MainMenu:
         from .bluetooth import ble_scan
         app = self._app()
         dur = app.prompt_text("BLE scan duration seconds", "10")
-        app.run_action_in_app("BLE Scan", ble_scan.scan, int(dur or "10"))
+        devices = app.run_action_in_app("BLE Scan", ble_scan.scan, int(dur or "10"))
+        self.last_ble_devices = devices or []
+        app.run_action_in_app("Display BLE Devices", ble_scan.display_devices, self.last_ble_devices)
+        app._log(f"BLE scan results: {len(self.last_ble_devices)} devices")
 
     def action_bt_recon(self):
         from .bluetooth import recon
         app = self._app()
-        mac = app.prompt_text("Bluetooth MAC", remember_key="bt_mac")
+
+        mac = None
+        if self.last_ble_devices:
+            opts = [f"{d.get('mac')} | {d.get('name', '<unnamed>')}" for d in self.last_ble_devices[:20]]
+            pick = app.choose_from_list("Pick device from last BLE scan (or cancel for manual)", opts)
+            if pick:
+                idx = opts.index(pick)
+                mac = self.last_ble_devices[idx].get("mac")
+
+        if not mac:
+            mac = app.prompt_text("Bluetooth MAC", remember_key="bt_mac")
         if mac:
             app.run_action_in_app("Bluetooth Recon", recon.gather, mac)
 
