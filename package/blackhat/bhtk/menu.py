@@ -1042,7 +1042,7 @@ class MainMenu:
 
         ap = None
         if self.last_wifi_networks:
-            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks[:20]]
+            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks]
             pick = app.choose_from_list("Pick AP from last scan (or cancel for manual)", opts)
             if pick:
                 idx = opts.index(pick)
@@ -1067,7 +1067,7 @@ class MainMenu:
         ap = None
         ch = None
         if self.last_wifi_networks:
-            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks[:20]]
+            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks]
             pick = app.choose_from_list("Pick AP from last scan (or cancel for manual)", opts)
             if pick:
                 idx = opts.index(pick)
@@ -1094,8 +1094,23 @@ class MainMenu:
         from .utils.interfaces import get_wifi_interfaces
         app = self._app()
         iface = app.choose_from_list("WiFi interface", get_wifi_interfaces())
-        ssid = app.prompt_text("SSID to impersonate", remember_key="evil_ssid")
-        ch = app.prompt_text("Channel", "6", remember_key="wifi_channel")
+
+        ssid = None
+        ch = None
+        if self.last_wifi_networks:
+            opts = [f"{n.get('ssid') or '<hidden>'} | {n.get('bssid')} | ch {n.get('channel')} | {n.get('signal')}" for n in self.last_wifi_networks]
+            pick = app.choose_from_list("Pick AP to clone from last scan (or cancel for manual)", opts)
+            if pick:
+                idx = opts.index(pick)
+                chosen = self.last_wifi_networks[idx]
+                ssid = chosen.get("ssid") or ""
+                ch = str(chosen.get("channel") or "6")
+
+        if not ssid:
+            ssid = app.prompt_text("SSID to impersonate", remember_key="evil_ssid")
+        if not ch:
+            ch = app.prompt_text("Channel", "6", remember_key="wifi_channel")
+
         if iface and ssid:
             app.run_action_in_app("Evil Twin AP", evil_twin.setup, iface, ssid, int(ch or "6"))
 
