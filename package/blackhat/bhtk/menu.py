@@ -370,6 +370,73 @@ class TUIMenuApp:
             y = top + 1 + i
             stdscr.addstr(y, left + 1, msg[:width])
 
+    def show_table_view(self, title: str, headers: List[str], rows: List[List[str]]):
+        """Blocking table viewer with scrolling; keeps user inside results view."""
+        if not hasattr(self, "stdscr"):
+            return
+        stdscr = self.stdscr
+        offset = 0
+        selected = 0
+
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            left, right, top, bottom = 2, w - 3, 1, h - 3
+            self._draw_box(stdscr, top, left, bottom, right, f" {title} ")
+
+            inner_w = max(20, right - left - 1)
+            view_h = max(3, bottom - top - 3)  # header + rows
+
+            # basic dynamic column widths
+            col_count = len(headers)
+            col_w = max(8, (inner_w - (col_count - 1) * 3) // max(1, col_count))
+
+            def fmt_line(parts):
+                return " | ".join(str(p)[:col_w].ljust(col_w) for p in parts)[:inner_w]
+
+            stdscr.attron(curses.A_BOLD)
+            stdscr.addstr(top + 1, left + 1, fmt_line(headers))
+            stdscr.attroff(curses.A_BOLD)
+
+            if selected < offset:
+                offset = selected
+            if selected >= offset + view_h:
+                offset = selected - view_h + 1
+
+            window = rows[offset : offset + view_h]
+            for idx, row in enumerate(window):
+                y = top + 2 + idx
+                row_idx = offset + idx
+                line = fmt_line(row)
+                if row_idx == selected:
+                    stdscr.attron(curses.color_pair(3) | curses.A_BOLD)
+                    stdscr.addstr(y, left + 1, line.ljust(inner_w))
+                    stdscr.attroff(curses.color_pair(3) | curses.A_BOLD)
+                else:
+                    stdscr.addstr(y, left + 1, line)
+
+            footer = f"Rows: {len(rows)}  Selected: {selected+1 if rows else 0}  ↑/↓ scroll  PgUp/PgDn jump  q/Esc close"
+            stdscr.addstr(bottom - 1, left + 1, footer[:inner_w])
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key in (ord('q'), ord('Q'), 27, curses.KEY_BACKSPACE, 10, 13):
+                break
+            if not rows:
+                continue
+            if key in (curses.KEY_UP, ord('k'), ord('K')):
+                selected = max(0, selected - 1)
+            elif key in (curses.KEY_DOWN, ord('j'), ord('J')):
+                selected = min(len(rows) - 1, selected + 1)
+            elif key == curses.KEY_NPAGE:
+                selected = min(len(rows) - 1, selected + view_h)
+            elif key == curses.KEY_PPAGE:
+                selected = max(0, selected - view_h)
+            elif key == curses.KEY_HOME:
+                selected = 0
+            elif key == curses.KEY_END:
+                selected = len(rows) - 1
+
     def _draw_box(self, stdscr, top, left, bottom, right, title):
         if bottom <= top or right <= left:
             return
@@ -920,7 +987,17 @@ class MainMenu:
             return
         networks = app.run_action_in_app("Scan Networks", scanner.scan, iface)
         self.last_wifi_networks = networks or []
-        app.run_action_in_app("Display Networks", scanner.display_networks, self.last_wifi_networks)
+        rows = [
+            [
+                n.get("bssid", ""),
+                (n.get("ssid") or "<hidden>"),
+                str(n.get("channel", "")),
+                str(n.get("signal", "")),
+                n.get("encryption", "Open"),
+            ]
+            for n in self.last_wifi_networks
+        ]
+        app.show_table_view("WiFi Scan Results", ["BSSID", "SSID", "CH", "Signal", "Enc"], rows)
         app._log(f"WiFi scan results: {len(self.last_wifi_networks)} networks")
 
     def action_deauth(self):
@@ -1025,7 +1102,8 @@ class MainMenu:
         dur = app.prompt_text("BLE scan duration seconds", "10")
         devices = app.run_action_in_app("BLE Scan", ble_scan.scan, int(dur or "10"))
         self.last_ble_devices = devices or []
-        app.run_action_in_app("Display BLE Devices", ble_scan.display_devices, self.last_ble_devices)
+        rows = [[d.get("mac", ""), d.get("name", "<unnamed>")] for d in self.last_ble_devices]
+        app.show_table_view("BLE Scan Results", ["MAC", "Name"], rows)
         app._log(f"BLE scan results: {len(self.last_ble_devices)} devices")
 
     def action_bt_recon(self):
