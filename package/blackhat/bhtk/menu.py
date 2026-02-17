@@ -721,6 +721,7 @@ class TUIMenuApp:
         return val
 
     def choose_from_list(self, title: str, options: List[str], default_index: int = 0) -> Optional[str]:
+        """Scrollable selector for arbitrarily long lists."""
         stdscr = getattr(self, "stdscr", None)
         if stdscr is None:
             return options[default_index] if options else None
@@ -728,28 +729,59 @@ class TUIMenuApp:
             self.status = f"No options for {title}"
             self._log(self.status)
             return None
-        h, w = stdscr.getmaxyx()
-        max_show = min(9, len(options))
-        start_y = max(2, h - (max_show + 6))
-        stdscr.addstr(start_y, 2, " " * (w - 4))
-        stdscr.addstr(start_y, 2, f"{title}: pick 1-{max_show} (blank={default_index+1})"[: max(1, w - 4)])
-        for i in range(max_show):
-            stdscr.addstr(start_y + 1 + i, 2, " " * (w - 4))
-            stdscr.addstr(start_y + 1 + i, 2, f"[{i+1}] {options[i]}"[: max(1, w - 4)])
-        stdscr.addstr(start_y + 1 + max_show, 2, " " * (w - 4))
-        stdscr.addstr(start_y + 1 + max_show, 2, "Choice: ")
-        stdscr.refresh()
-        curses.echo()
-        raw = stdscr.getstr(start_y + 1 + max_show, 10, 3).decode(errors="ignore").strip()
-        curses.noecho()
-        if raw == "":
-            idx = max(0, min(default_index, len(options)-1))
-            return options[idx]
-        if raw.isdigit():
-            idx = int(raw)-1
-            if 0 <= idx < len(options):
-                return options[idx]
-        return None
+
+        selected = max(0, min(default_index, len(options) - 1))
+        offset = 0
+
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            top, left, bottom, right = 1, 2, h - 3, w - 3
+            self._draw_box(stdscr, top, left, bottom, right, f" {title} ")
+
+            inner_w = max(20, right - left - 1)
+            view_h = max(3, bottom - top - 2)
+
+            if selected < offset:
+                offset = selected
+            if selected >= offset + view_h:
+                offset = selected - view_h + 1
+
+            window = options[offset:offset + view_h]
+            for i, item in enumerate(window):
+                idx = offset + i
+                y = top + 1 + i
+                label = f"[{idx+1}] {item}"[:inner_w]
+                if idx == selected:
+                    stdscr.attron(curses.color_pair(3) | curses.A_BOLD)
+                    stdscr.addstr(y, left + 1, label.ljust(inner_w))
+                    stdscr.attroff(curses.color_pair(3) | curses.A_BOLD)
+                else:
+                    stdscr.addstr(y, left + 1, label)
+
+            help_line = "↑/↓ move  PgUp/PgDn jump  Enter select  q/Esc cancel"
+            stat_line = f"Items: {len(options)}  Selected: {selected+1}"
+            stdscr.addstr(bottom - 1, left + 1, stat_line[:inner_w])
+            stdscr.addstr(h - 1, 2, help_line[: max(1, w - 4)])
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key in (10, 13, curses.KEY_ENTER):
+                return options[selected]
+            if key in (27, ord('q'), ord('Q'), curses.KEY_BACKSPACE, 127, 8):
+                return None
+            if key in (curses.KEY_UP, ord('k'), ord('K')):
+                selected = max(0, selected - 1)
+            elif key in (curses.KEY_DOWN, ord('j'), ord('J')):
+                selected = min(len(options) - 1, selected + 1)
+            elif key == curses.KEY_NPAGE:
+                selected = min(len(options) - 1, selected + view_h)
+            elif key == curses.KEY_PPAGE:
+                selected = max(0, selected - view_h)
+            elif key == curses.KEY_HOME:
+                selected = 0
+            elif key == curses.KEY_END:
+                selected = len(options) - 1
 
     def _terminate_active_procs(self):
         for p in list(self.active_procs):
